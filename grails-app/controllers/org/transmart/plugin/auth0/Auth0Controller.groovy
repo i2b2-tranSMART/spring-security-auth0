@@ -432,7 +432,6 @@ class Auth0Controller implements InitializingBean {
 	void afterPropertiesSet() {
 		authModel = [auth0CallbackUrl: auth0Config.auth0CallbackUrl,
 		             auth0ClientId   : auth0Config.auth0ClientId,
-		             auth0Domain     : auth0Config.auth0Domain,
-		             uiHeroImageUrl  : customizationConfig.uiHeroImageUrl]
+		             auth0Domain     : auth0Config.auth0Domain]
 	}
 }
