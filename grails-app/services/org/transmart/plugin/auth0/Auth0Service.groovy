@@ -93,23 +93,23 @@ class Auth0Service implements InitializingBean {
 			credentials.tosVerified = verifyTOSAccepted(credentials.id)
 			if (credentials.tosVerified) {
 				authenticateAs credentials
-				logger.debug 'User id:{} email:{} successfully authenticated',
+				logger.info 'User id:{} email:{} successfully authenticated',
 						credentials.id, credentials.email
 				[uri: auth0Config.redirectOnSuccess]
 			}
 			else {
-				logger.debug 'User id:{} email:{} authenticated but needs TOS, redirecting',
+				logger.info 'User id:{} email:{} authenticated but needs TOS, redirecting',
 						credentials.id, credentials.email
 				[action: 'tos']
 			}
 		}
 		else {
 			if (auth0Config.registrationEnabled) {
-				logger.debug 'Redirecting to registration: {}', credentials
+				logger.info 'Redirecting to registration: {}', credentials
 				[action: 'registration']
 			}
 			else {
-				logger.debug 'Registration not enabled, redirecting to notauthorized: {}', credentials
+				logger.info 'Registration not enabled, redirecting to notauthorized: {}', credentials
 				[action: 'notauthorized']
 			}
 		}
