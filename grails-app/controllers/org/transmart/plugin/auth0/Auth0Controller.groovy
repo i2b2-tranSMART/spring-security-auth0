@@ -51,21 +51,7 @@ class Auth0Controller implements InitializingBean {
 	@Autowired private SecurityService securityService
 	@Autowired private UserService userService
 
-	// can't be initialized in afterPropertiesSet() since GORM isn't available yet
-	@Lazy private String authViewName = { ->
-		String loginTemplatesValue = customizationService.setting('login-template')?.fieldvalue ?: ''
-		if (loginTemplatesValue && !loginTemplatesValue.equalsIgnoreCase('default')) {
-			loginTemplatesValue
-		}
-		else {
-			'auth'
-		}
-	}()
-	@Lazy private String notAuthorizedTemplate = { -> customizationService.setting('notAuthorizedTemplate')?.fieldvalue ?: '' }()
-
 	def auth() {
-		nocache response
-
 		boolean forcedFormLogin = request.queryString
 		if (customizationConfig.guestAutoLogin && !forcedFormLogin) {
 			logger.info 'Automatic login with userid {}', customizationConfig.guestUserName
@@ -88,7 +74,7 @@ class Auth0Controller implements InitializingBean {
 			redirect uri: auth0Config.redirectOnSuccess
 		}
 		else {
-			render view: authViewName, model: buildAuthModel()
+			buildAuthModel()
 		}
 	}
 
@@ -187,7 +173,7 @@ class Auth0Controller implements InitializingBean {
 
 	def forceAuth() {
 		authService.logout()
-		render view: authViewName, model: buildAuthModel()
+		render view: 'auth', model: buildAuthModel()
 	}
 
 	def logout() {
@@ -208,7 +194,6 @@ class Auth0Controller implements InitializingBean {
 
 	def notauthorized() {
 		authService.logout()
-		[notAuthorizedTemplate: notAuthorizedTemplate]
 	}
 
 	def notyet() {
@@ -419,14 +404,6 @@ class Auth0Controller implements InitializingBean {
 
 	private void accessLog(String username, String event, String message = null) {
 		accessLogService.report username, event, message
-	}
-
-	private void nocache(response) {
-		response.setHeader('Cache-Control', 'no-cache') // HTTP 1.1
-		response.addDateHeader('Expires', 0)
-		response.setDateHeader('max-age', 0)
-		response.setIntHeader('Expires', -1) //prevents caching at the proxy server
-		response.addHeader('cache-Control', 'private') //IE5.x only
 	}
 
 	void afterPropertiesSet() {
