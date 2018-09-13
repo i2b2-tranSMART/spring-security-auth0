@@ -71,18 +71,23 @@ class Auth0Controller implements InitializingBean {
 		}
 
 		if (securityService.loggedIn()) {
+			logger.debug 'User id:{} email:{} already authenticated in auth()',
+					securityService.currentUserId(), securityService.principal().email
 			redirect uri: auth0Config.redirectOnSuccess
 		}
 		else {
+			logger.debug 'Not authenticated, showing login page'
 			buildAuthModel()
 		}
 	}
 
 	def passwordLogin() {
 		if (auth0AdminExists()) {
+			logger.warn 'Unexpected password login attempt, not allowed when there is at least one Auth0 user with admin rights'
 			render status: 404
 		}
 		else {
+			logger.debug 'No Auth0 user with admin rights exists, forwarding to username/password login'
 			forward controller: 'login', action: 'auth'
 		}
 	}
@@ -120,6 +125,7 @@ class Auth0Controller implements InitializingBean {
 			}
 		}
 
+		logger.debug msg
 		flash.message = msg
 		redirect action: 'auth', params: params
 	}
@@ -178,6 +184,8 @@ class Auth0Controller implements InitializingBean {
 
 	def logout() {
 		accessLog securityService.currentUsername(), 'Logout'
+		logger.debug 'Logout for user id:{} email:{}',
+				securityService.currentUserId(), securityService.principal().email
 
 		boolean auth0Login = securityService.authentication() instanceof Auth0JWTToken
 

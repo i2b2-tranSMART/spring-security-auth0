@@ -93,17 +93,23 @@ class Auth0Service implements InitializingBean {
 			credentials.tosVerified = verifyTOSAccepted(credentials.id)
 			if (credentials.tosVerified) {
 				authenticateAs credentials
+				logger.debug 'User id:{} email:{} successfully authenticated',
+						credentials.id, credentials.email
 				[uri: auth0Config.redirectOnSuccess]
 			}
 			else {
+				logger.debug 'User id:{} email:{} authenticated but needs TOS, redirecting',
+						credentials.id, credentials.email
 				[action: 'tos']
 			}
 		}
 		else {
 			if (auth0Config.registrationEnabled) {
+				logger.debug 'Redirecting to registration: {}', credentials
 				[action: 'registration']
 			}
 			else {
+				logger.debug 'Registration not enabled, redirecting to notauthorized: {}', credentials
 				[action: 'notauthorized']
 			}
 		}
@@ -199,16 +205,20 @@ class Auth0Service implements InitializingBean {
 		logger.debug 'Auth0 Credentials uninitialized: {} {}', uninitialized*.username, uninitialized*.email
 		boolean foundUninitialized = false
 		if (uninitialized.size() > 1) {
-			// TODO
+			logger.warn 'Found more than one ({}) uninitialized users for unique id {}',
+					uninitialized.size(), uniqueId
 		}
 		else if (uninitialized.size() == 1) {
 			existingUser = uninitialized[0]
 			foundUninitialized = true
+			logger.debug 'Found uninitialized user id:{} email:{}',
+					existingUser.id, existingUser.email
 		}
 		else {
 			existingUser = userService.findBy('uniqueId', uniqueId)
 			if (existingUser) {
-				logger.debug 'Auth0 Credentials existingUser for uniqueId {}: {}/{}', uniqueId, existingUser.username, existingUser.email
+				logger.debug 'Auth0 Credentials existingUser uniqueId: {} username: {} email: {} id: {}',
+						uniqueId, existingUser.username, existingUser.email, existingUser.id
 			}
 		}
 
@@ -583,6 +593,8 @@ class Auth0Service implements InitializingBean {
 		tokenAuth.principal = authService.loadAuthUserDetailsByUniqueId(credentials.uniqueId)
 		tokenAuth.authenticated = true
 		SecurityContextHolder.context.authentication = tokenAuth
+		logger.debug 'authenticateAs username {} email {} id {}',
+				tokenAuth.principal.username, tokenAuth.principal.email, tokenAuth.principal.id
 	}
 
 	@Cacheable('webtask')
