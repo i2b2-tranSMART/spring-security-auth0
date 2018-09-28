@@ -53,6 +53,8 @@ class Auth0Service implements InitializingBean {
 			new ProviderInfo(webtaskName: 'ldap-connector', displayName: "Boston Children's Hospital", subPrefix: 'ad|ldap-connector|')].asImmutable()
 
 	private static final String CREDENTIALS_KEY = 'auth0Credentials'
+	private static final char DASH = '-'
+	private static final char X = 'X'
 
 	private Algorithm algorithm
 	private String oauthTokenUrl
@@ -668,6 +670,31 @@ class Auth0Service implements InitializingBean {
 		String errorMessage = createAdmin(admin, transactionStatus)
 		if (errorMessage) {
 			accessLogService.report 'BootStrap', 'admin auto-create', errorMessage
+		}
+	}
+
+	/**
+	 * Validates that the string is a valid ORCiD.
+	 *
+	 * @param orcid the id
+	 * @return null if ok, a warning/error message otherwise
+	 */
+	String validateOrcid(String orcid) {
+		if (!(orcid ==~ /\d{4}-\d{4}-\d{4}-\d{3}(\d|X)/)) {
+			return 'Failed regex check'
+		}
+
+		int total = 0
+		for (int i = 0; i < 18; i++) {
+			char c = orcid.charAt(i)
+			if (c == DASH) continue
+			total = (total + Character.getNumericValue(c)) * 2
+		}
+		int remainder = total % 11
+		int result = (12 - remainder) % 11
+		char checksumChar = result == 10 ? X : Character.forDigit(result, 10)
+		if (checksumChar != orcid.charAt(18)) {
+			return 'Failed check digit'
 		}
 	}
 

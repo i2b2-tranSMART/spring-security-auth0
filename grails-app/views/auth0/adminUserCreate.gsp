@@ -47,7 +47,8 @@
 				<tr class="prop">
 					<td valign="top" class="name"><label>Auth0 Provider:</label></td>
 					<td valign="top" class="value">
-						<g:select name='auth0Provider' value="${auth0Provider}" from="${auth0Providers}"/>
+						<g:select name='auth0Provider' value="${auth0Provider}" from="${auth0Providers}"
+						          noSelection="${['null': 'Select...']}" onchange="updateToolip()"/>
 					</td>
 				</tr>
 
@@ -55,6 +56,7 @@
 					<td valign="top" class="name"><label for="uniqueId">Provider ID:</label></td>
 					<td valign="top" class="value ${hasErrors(bean: person, field: 'uniqueId', 'errors')}">
 						<g:textField name='uniqueId' value="${uniqueId}"/>
+						<g:img id='helpicon' dir='images/help' file='helpicon.png'/>
 					</td>
 				</tr>
 
@@ -69,5 +71,19 @@
 	</g:form>
 
 </div>
+<script>
+function updateToolip() {
+	var tooltip = '';
+	switch($('#auth0Provider').val()) {
+		case 'Google':                     tooltip = 'A Gmail address, or the internal 21-digit Google id number'; break;
+		case 'GitHub':                     tooltip = 'An email address, or the internal GitHub id number'; break;
+		case 'ORCiD':                      tooltip = 'An ORCiD in the form dddd-dddd-dddd-dddd where each d is a digit, and the last may be an "X"'; break;
+		case 'Harvard Medical School':     tooltip = 'An email address (@hms.harvard.edu)'; break;
+		case 'eRA Commons':                tooltip = 'eRA Commons or NIH email'; break;
+		case "Boston Children's Hospital": tooltip = 'BCH login name'; break;
+	}
+	$('#helpicon').attr('title', tooltip);
+}
+</script>
 </body>
 </html>

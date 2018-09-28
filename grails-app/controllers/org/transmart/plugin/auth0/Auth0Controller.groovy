@@ -327,15 +327,15 @@ class Auth0Controller implements InitializingBean {
 					username: UUID.randomUUID().toString())
 		}
 
-		authUser.userRealName = params.userRealName ?: ''
+		authUser.userRealName = (params.userRealName ?: '').trim()
 		authUser.name = authUser.userRealName
 
-		authUser.email = params.email ?: ''
+		authUser.email = (params.email ?: '').trim()
 
 		authUser.validate()
 
 		if (authUser.email) {
-			if (!EmailValidator.instance.isValid(authUser.email)) {
+			if (!validateEmail(authUser.email)) {
 				authUser.errors.rejectValue 'email', 'valid', null,
 						'Please enter a valid email address'
 			}
@@ -345,14 +345,7 @@ class Auth0Controller implements InitializingBean {
 					'Email address is required'
 		}
 
-		authUser.uniqueId = auth0Service.auth0Providers.find { ProviderInfo pi -> pi.displayName == params.auth0Provider }
-		String providerId = params.uniqueId ?: ''
-		if (providerId) {
-			authUser.uniqueId += providerId
-		}
-		if (create) {
-			authUser.uniqueId += '_UNINITIALIZED'
-		}
+		determineUniqueId authUser, create
 
 		String message
 		if (create) {
@@ -377,8 +370,65 @@ class Auth0Controller implements InitializingBean {
 			redirect action: 'adminUserShow', id: authUser.id
 		}
 		else {
-			flash.message = 'An error occurred, cannot save user'
 			render view: create ? 'adminUserCreate' : 'adminUserEdit', model: buildPersonModel(authUser, userLevel)
+		}
+	}
+
+	private boolean validateEmail(String email) {
+		EmailValidator.instance.isValid email
+	}
+
+	private void determineUniqueId(AuthUser authUser, boolean create) {
+		ProviderInfo providerInfo = auth0Service.auth0Providers.find { ProviderInfo pi -> pi.displayName == params.auth0Provider }
+		String providerId
+		if (providerInfo) {
+			providerId = (params.uniqueId ?: '').trim()
+			if (providerId) {
+				authUser.uniqueId = providerInfo.subPrefix + providerId
+				if (create) {
+					authUser.uniqueId += '_UNINITIALIZED'
+				}
+			}
+		}
+
+		if (!authUser.uniqueId) {
+			authUser.errors.rejectValue 'uniqueId', 'invalidProviderId', null,
+					'Provider and provider ID are both required'
+			return
+		}
+
+		switch (providerInfo.webtaskName) {
+			case 'google-oauth2':
+				if (!(providerId ==~ /\d{21}/ || validateEmail(providerId))) {
+					authUser.errors.rejectValue 'uniqueId', 'invalidGoogle', null,
+							'Google provider ID must be an email or a 21-digit number'
+				}
+				break
+			case 'github':
+				if (!(providerId ==~ /\d+/ || validateEmail(providerId))) {
+					authUser.errors.rejectValue 'uniqueId', 'invalidGithub', null,
+							'GitHub provider ID must be an email or a number'
+				}
+				break
+			case 'ORCiD':
+				String errorMessage = auth0Service.validateOrcid(providerId)
+				if (errorMessage) {
+					authUser.errors.rejectValue 'uniqueId', 'invalidORCID', null,
+							'Invalid ORCiD provider ID: ' + errorMessage
+				}
+				break
+			case 'hms-it':
+				if (!validateEmail(providerId)) {
+					authUser.errors.rejectValue 'uniqueId', 'invalidHMS', null,
+							'HMS provider ID must be an email address'
+				}
+				break
+			case 'nih-gov-prod':
+				if (!validateEmail(providerId)) {
+					authUser.errors.rejectValue 'uniqueId', 'invalidERA', null,
+							'eRA Commons provider ID must be an email address'
+				}
+				break
 		}
 	}
 
