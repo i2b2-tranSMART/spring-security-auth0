@@ -11,6 +11,8 @@ import grails.plugin.mail.MailService
 import grails.plugin.springsecurity.SpringSecurityService
 import grails.transaction.Transactional
 import groovy.transform.CompileDynamic
+import groovy.transform.CompileStatic
+import groovy.transform.Immutable
 import groovy.util.logging.Slf4j
 import org.apache.commons.validator.routines.EmailValidator
 import org.codehaus.groovy.grails.web.servlet.mvc.GrailsWebRequest
@@ -42,18 +44,19 @@ import javax.servlet.http.HttpServletRequest
 @Slf4j('logger')
 class Auth0Service implements InitializingBean {
 
-	// TODO providers shouldn't be hard-coded
-	public static final Map<String, String> auth0Providers = [Google                  : 'google-oauth2|',
-	                                                          GitHub                  : 'github|',
-	                                                          ORCiD                   : 'oauth2|ORCiD|',
-	                                                          'Harvard Medical School': 'samlp|',
-	                                                          'eRA Commons'           : 'samlp|'].asImmutable()
+	private static final List<ProviderInfo> AUTH0_PROVIDERS = [
+			new ProviderInfo(webtaskName: 'google-oauth2',  displayName: 'Google',                     subPrefix: 'google-oauth2|'),
+			new ProviderInfo(webtaskName: 'github',         displayName: 'GitHub',                     subPrefix: 'github|'),
+			new ProviderInfo(webtaskName: 'ORCiD',          displayName: 'ORCiD',                      subPrefix: 'oauth2|ORCiD|'),
+			new ProviderInfo(webtaskName: 'hms-it',         displayName: 'Harvard Medical School',     subPrefix: 'samlp|'),
+			new ProviderInfo(webtaskName: 'nih-gov-prod',   displayName: 'eRA Commons',                subPrefix: 'samlp|')].asImmutable()
 
 	private static final String CREDENTIALS_KEY = 'auth0Credentials'
 
 	private Algorithm algorithm
 	private String oauthTokenUrl
 	private String userInfoUrl
+	private final List<ProviderInfo> activeProviders = []
 
 	@Autowired private AccessLogService accessLogService
 	@Autowired private AuthService authService
@@ -68,6 +71,10 @@ class Auth0Service implements InitializingBean {
 
 	@Autowired(required = false)
 	private Auth0Config auth0Config
+
+	List<ProviderInfo> getAuth0Providers() {
+		activeProviders
+	}
 
 	/**
 	 * Handle the Auth0 callback.
@@ -492,15 +499,14 @@ class Auth0Service implements InitializingBean {
 			return
 		}
 
-		Map.Entry<String, String> auth0ProviderEntry = auth0Providers.entrySet().find { Map.Entry<String, String> entry ->
-			user.uniqueId?.startsWith entry.value
-		}
-		String providerId = (auth0ProviderEntry ? user.uniqueId - auth0ProviderEntry.value : '') - '_UNINITIALIZED'
+		ProviderInfo providerInfo = AUTH0_PROVIDERS.find { ProviderInfo pi -> user.uniqueId?.startsWith pi.subPrefix }
+
+		String providerId = (providerInfo ? user.uniqueId - providerInfo.subPrefix : '') - '_UNINITIALIZED'
 
 		String body = groovyPageRenderer.render(template: '/auth0/email_accessgranted', model: [
 				adminEmailMessage : auth0Config.adminEmailMessage,
 				appUrl            : appUrl,
-				authProvider      : auth0ProviderEntry?.key,
+				authProvider      : providerInfo?.displayName,
 				authProviderId    : providerId,
 				emailLogo         : customizationConfig.emailLogo,
 				instanceName      : customizationConfig.instanceName,
@@ -683,15 +689,40 @@ class Auth0Service implements InitializingBean {
 		(auth0Config.webtaskBaseUrl + '/connection_details_base64?webtask_no_cache=1&' + urlMethod).toURL().text
 	}
 
-	void afterPropertiesSet() {
-		if (auth0Config) { // not injected if active=false
-			algorithm = Algorithm.HMAC256(auth0Config.auth0ClientSecret)
-			oauthTokenUrl = 'https://' + auth0Config.auth0Domain + '/oauth/token'
-			userInfoUrl = 'https://' + auth0Config.auth0Domain + '/userinfo?access_token='
+	private HttpServletRequest currentRequest() {
+		((GrailsWebRequest) RequestContextHolder.currentRequestAttributes()).request
+	}
+
+	private void determineProviders() {
+		String webtaskJs = webtaskJavaScript()
+		int start = webtaskJs.indexOf('var connections = [{') + 18
+		int end = webtaskJs.indexOf('}];\tvar lock =', start) + 1
+		Collection<String> webtaskNames = JSON.parse(webtaskJs[start..end]).collect { it['name'] } as Collection
+
+		for (ProviderInfo info in AUTH0_PROVIDERS) {
+			if (info.webtaskName in webtaskNames) {
+				activeProviders << info
+			}
 		}
 	}
 
-	protected HttpServletRequest currentRequest() {
-		((GrailsWebRequest) RequestContextHolder.currentRequestAttributes()).request
+	void afterPropertiesSet() {
+		if (!auth0Config) { // not injected if active=false
+			return
+		}
+
+		algorithm = Algorithm.HMAC256(auth0Config.auth0ClientSecret)
+		oauthTokenUrl = 'https://' + auth0Config.auth0Domain + '/oauth/token'
+		userInfoUrl = 'https://' + auth0Config.auth0Domain + '/userinfo?access_token='
+
+		determineProviders()
+	}
+
+	@CompileStatic
+	@Immutable
+	static class ProviderInfo {
+		String webtaskName
+		String displayName
+		String subPrefix
 	}
 }

@@ -11,6 +11,7 @@ import org.springframework.security.authentication.CredentialsExpiredException
 import org.springframework.security.authentication.DisabledException
 import org.springframework.security.authentication.LockedException
 import org.springframework.security.web.WebAttributes
+import org.transmart.plugin.auth0.Auth0Service.ProviderInfo
 import org.transmart.plugin.custom.CustomizationConfig
 import org.transmart.plugin.custom.CustomizationService
 import org.transmart.plugin.custom.Settings
@@ -344,7 +345,7 @@ class Auth0Controller implements InitializingBean {
 					'Email address is required'
 		}
 
-		authUser.uniqueId = Auth0Service.auth0Providers[params.auth0Provider]
+		authUser.uniqueId = auth0Service.auth0Providers.find { ProviderInfo pi -> pi.displayName == params.auth0Provider }
 		String providerId = params.uniqueId ?: ''
 		if (providerId) {
 			authUser.uniqueId += providerId
@@ -384,16 +385,16 @@ class Auth0Controller implements InitializingBean {
 	private Map buildPersonModel(AuthUser authUser, UserLevel userLevel = null) {
 		Map description = (Map) JSON.parse(authUser.description ?: '{}')
 
-		Map.Entry<String, String> auth0ProviderEntry = Auth0Service.auth0Providers.entrySet().find { Map.Entry<String, String> entry ->
-			authUser.uniqueId?.startsWith entry.value
+		ProviderInfo providerInfo = auth0Service.auth0Providers.find { ProviderInfo pi ->
+			authUser.uniqueId?.startsWith pi.subPrefix
 		}
-		String providerId = (auth0ProviderEntry ? authUser.uniqueId - auth0ProviderEntry.value : '') - '_UNINITIALIZED'
+		String providerId = (providerInfo ? authUser.uniqueId - providerInfo.subPrefix : '') - '_UNINITIALIZED'
 
 		[person        : authUser,
 		 userLevel     : userLevel ?: customizationService.userLevel(authUser),
 		 connection    : description.connection,
-		 auth0Providers: Auth0Service.auth0Providers.keySet(),
-		 auth0Provider : auth0ProviderEntry?.key,
+		 auth0Providers: auth0Service.auth0Providers*.displayName,
+		 auth0Provider : providerInfo?.displayName,
 		 uniqueId      : providerId,
 		 userLevels    : USER_LEVELS]
 	}
