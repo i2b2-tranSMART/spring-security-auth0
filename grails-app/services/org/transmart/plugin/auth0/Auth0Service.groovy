@@ -49,7 +49,8 @@ class Auth0Service implements InitializingBean {
 			new ProviderInfo(webtaskName: 'github',         displayName: 'GitHub',                     subPrefix: 'github|'),
 			new ProviderInfo(webtaskName: 'ORCiD',          displayName: 'ORCiD',                      subPrefix: 'oauth2|ORCiD|'),
 			new ProviderInfo(webtaskName: 'hms-it',         displayName: 'Harvard Medical School',     subPrefix: 'samlp|'),
-			new ProviderInfo(webtaskName: 'nih-gov-prod',   displayName: 'eRA Commons',                subPrefix: 'samlp|')].asImmutable()
+			new ProviderInfo(webtaskName: 'nih-gov-prod',   displayName: 'eRA Commons',                subPrefix: 'samlp|'),
+			new ProviderInfo(webtaskName: 'ldap-connector', displayName: "Boston Children's Hospital", subPrefix: 'ad|ldap-connector|')].asImmutable()
 
 	private static final String CREDENTIALS_KEY = 'auth0Credentials'
 
