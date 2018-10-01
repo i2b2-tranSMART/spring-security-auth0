@@ -423,12 +423,6 @@ class Auth0Controller implements InitializingBean {
 							'HMS provider ID must be an email address'
 				}
 				break
-			case 'nih-gov-prod':
-				if (!validateEmail(providerId)) {
-					authUser.errors.rejectValue 'uniqueId', 'invalidERA', null,
-							'eRA Commons provider ID must be an email address'
-				}
-				break
 		}
 	}
 
