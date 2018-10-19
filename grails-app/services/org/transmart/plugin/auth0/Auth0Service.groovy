@@ -55,8 +55,14 @@ class Auth0Service implements InitializingBean {
 	private static final String CREDENTIALS_KEY = 'auth0Credentials'
 	private static final char DASH = '-'
 	private static final char X = 'X'
+    private String hql = '''
+				select u from AuthUser u
+                where u.passwd='auth0'
+                and lower(u.email)=:email
+                and lower(u.uniqueId)=lower(:uniqueId)
+				 '''
 
-	private Algorithm algorithm
+    private Algorithm algorithm
 	private String oauthTokenUrl
 	private String userInfoUrl
 	private final List<ProviderInfo> activeProviders = []
@@ -86,6 +92,8 @@ class Auth0Service implements InitializingBean {
 	 *         or a redirect action under the 'action' key
 	 */
 	Map<String, String> callback(String code) {
+		logger.debug "callback() service starting"
+
 		HttpServletRequest request = currentRequest()
 		String port
 		String scheme = request.scheme.toLowerCase()
@@ -97,29 +105,32 @@ class Auth0Service implements InitializingBean {
 		}
 		String redirectUri = request.scheme + '://' + request.serverName + port + request.contextPath
 
+        logger.debug '/callback calling createCredentials()'
 		Credentials credentials = createCredentials(code, redirectUri)
+        logger.debug '/callback credentials:', credentials
 
 		if (credentials.username && credentials.level > UserLevel.ZERO) {
 			credentials.tosVerified = verifyTOSAccepted(credentials.id)
 			if (credentials.tosVerified) {
 				authenticateAs credentials
-				logger.info 'User id:{} email:{} successfully authenticated',
+				logger.info '/callback User id:{} email:{} successfully authenticated',
 						credentials.id, credentials.email
+                logger.debug '/callback redirecting to ',auth0Config.redirectOnSuccess
 				[uri: auth0Config.redirectOnSuccess]
 			}
 			else {
-				logger.info 'User id:{} email:{} authenticated but needs TOS, redirecting',
+				logger.info '/callback User id:{} email:{} authenticated but needs TOS, redirecting',
 						credentials.id, credentials.email
 				[action: 'tos']
 			}
 		}
 		else {
 			if (auth0Config.registrationEnabled) {
-				logger.info 'Redirecting to registration: {}', credentials
+				logger.info '/callback Redirecting to registration: {}', credentials
 				[action: 'registration']
 			}
 			else {
-				logger.info 'Registration not enabled, redirecting to notauthorized: {}', credentials
+				logger.info '/callback Registration not enabled, redirecting to notauthorized: {}', credentials
 				[action: 'notauthorized']
 			}
 		}
@@ -132,13 +143,81 @@ class Auth0Service implements InitializingBean {
 		(Credentials) currentRequest().session.getAttribute(CREDENTIALS_KEY)
 	}
 
+    /**
+     * Determine if the user logging in has already been recorded before, where the sub-id is the same
+     * as the uniqueId and email matches the stored e-mail value. After the first successful login,
+     * the uniqueId for the user has been updated from the 'sub' claim from the userinfo JSON, and
+     * should match every time the logs in again.
+     * @param userInfo the full Auth0 profile for the user that was returned by the /userinfo endpoint
+     */
+    AuthUser getExistingUser(JSONObject userInfo) {
+        logger.debug 'isExistingUser() starting'
+
+        Map args = [:]
+        args.uniqueId = userInfo.getString('sub')
+        args.email = userInfo.getString('email').toLowerCase()
+        logger.debug 'isExistingUser() lookup by uniqId:{} and email:{}', args.uniqueId, args.email
+
+        // TODO: This should NOT be an SQL statement, maybe later we could convert this to a GORM query!?
+        logger.debug 'isExistingUser() SQL:{}', hql
+        List<AuthUser> uninitialized = AuthUser.executeQuery(hql, args)
+        if (uninitialized.size() > 1) {
+            logger.error 'isExistingUser() Found more than one ({}) users for uniqueId:{} and email:{} combo',
+                    uninitialized.size(), args.uniqueId, args.email
+            return null
+        } else if (uninitialized.size() == 1) {
+            logger.debug 'isExistingUser() found one user record'
+            return uninitialized[0]
+        } else {
+            logger.warn 'isExistingUser() did not find any user record'
+            return null
+        }
+
+        // Hopefully, if no user found or more than one user found, this will return NULL?!
+    }
+
+    /**
+     * Determine if the user is logging in for the first time, or not. Based on the
+     * initial user record creation by the admin, the uniqueId is either set to
+     * CONNECTION|CONNECTION-ID (email, ORCiD or other known identifier) and name is 'unregistered'
+     * @param userInfo the full Auth0 profile for the user that was returned by the /userinfo endpoint
+     */
+    AuthUser getUninitedUser(JSONObject userInfo) {
+        logger.debug 'getUninitedUser() starting'
+
+        Map args = [:]
+        List<String> components = Arrays.asList(
+                userInfo.getJSONArray('identities').getJSONObject(0).getString('provider'),
+                String.join("_", Arrays.asList(userInfo.getString('email'),"UNINITIALIZED"))
+        )
+        args.uniqueId = String.join("|", components)
+        args.email = userInfo.getString('email').toLowerCase()
+        logger.debug 'getUninitedUser() lookup by uniqId:{} and email:{}', args.uniqueId, args.email
+
+        // TODO: This should NOT be an SQL statement, maybe later we could convert this to a GORM query!?
+        logger.debug 'getUninitedUser() SQL:{}', hql
+        List<AuthUser> uninitialized = AuthUser.executeQuery(hql, args)
+        if (uninitialized.size() > 1) {
+            logger.error 'getUninitedUser() Found more than one ({}) users for uniqueId:{} and email:{} combo',
+                    uninitialized.size(), args.uniqueId, args.email
+            return null
+        } else if (uninitialized.size() == 1) {
+            logger.debug 'getUninitedUser() found one user record'
+            return uninitialized[0]
+        } else {
+            logger.warn 'getUninitedUser() did not find any user record'
+            return null
+        }
+        // Hopefully, if no user found or more than one user found, this will return NULL?!
+    }
+
 	/**
 	 * Creates an initial Credentials instance and stores it in the HTTP session.
 	 * @param code the 'code' querystring parameter from the Auth0 callback
 	 * @param redirectUri base of the callback url, e.g. https://server/contextPath
 	 */
 	Credentials createCredentials(String code, String redirectUri) {
-
+        logger.debug 'createCredentials() starting'
 		JSONObject json = new JSONObject(
 				client_id: auth0Config.auth0ClientId,
 				client_secret: auth0Config.auth0ClientSecret,
@@ -189,103 +268,69 @@ class Auth0Service implements InitializingBean {
 		// 		"user_id":"google-oauth2|..."
 		// }
 
-		logger.debug 'Auth0 user info: {}', userInfo
+		logger.info 'createCredentials() Auth0 userinfo: {}', userInfo
 
-		String email = determineEmail(userInfo)
-		String uniqueId = determineUniqueId(userInfo)
+        // Create a base `Credentials` object, with reasonable defaults.
+        Credentials credentials = new Credentials(
+                accessToken: accessToken,
+                connection: userInfo.getJSONArray('identities').getJSONObject(0).getString('connection'),
+                email: userInfo.optString('email'),
+                idToken: 'INVALID_TOKEN',
+                name: 'unregistered',
+                nickname: 'unregistered',
+                picture: '',
+                uniqueId: 'UNKNOWN',
+                level: UserLevel.UNREGISTERED
+        )
 
-		AuthUser existingUser
+        // Check if the user has logged in before (have all matching information against the previously updated) or
+        // this is a first-time login, in which case, we need to update the UNINITED user record with the actual
+        // credentials, or simply someone who is not yet in the database, and therefore not pre-authorized to log-in.
+        AuthUser existingUser = getExistingUser(userInfo)
+        if (existingUser) {
+            logger.debug 'createCredentials() User already exists, and not a new user.'
+            // Update the credentials from the user's existing record
+            credentials.id = existingUser.id
+            credentials.name = existingUser.userRealName
+            credentials.username = existingUser.username
+            credentials.email = existingUser.email
+            credentials.uniqueId = existingUser.uniqueId
+            credentials.idToken = rebuildJwt(idToken, existingUser.email)
+            credentials.level = customizationService.userLevel(existingUser)
 
-		Map args = [:]
-		args.uniqueId = uniqueId
-		args.uniqueIdUninit = uniqueId + '_UNINITIALIZED'
-		String hql = '''
-				select u from AuthUser u
-				where u.passwd='auth0'
-				  and u.enabled=false
-				  and u.description is null
-				  and (u.uniqueId=:uniqueId or u.uniqueId=:uniqueIdUninit)
-				 '''
-		if (email) {
-			hql += ' and lower(u.email)=:email'
-			args.email = email.toLowerCase()
-		}
+        } else {
+            existingUser = getUninitedUser(userInfo)
+            if (existingUser) {
+                logger.debug 'createCredentials() User exists, but uninitialized!'
+                credentials.id = existingUser.id
+                credentials.username = userInfo.getString('user_id')
+                credentials.idToken = rebuildJwt(idToken, existingUser.email)
+                credentials.picture = userInfo.optString('picture')
+                credentials.name = userInfo.optString('name')
+                credentials.nickname = userInfo.optString('nickname')
+                credentials.uniqueId = userInfo.optString('user_id')
+                credentials.level = customizationService.userLevel(existingUser)
+                finishUninitializedUser existingUser, credentials
 
-		List<AuthUser> uninitialized = AuthUser.executeQuery(hql, args)
-		logger.debug 'Auth0 Credentials uninitialized: {} {}', uninitialized*.username, uninitialized*.email
-		boolean foundUninitialized = false
-		if (uninitialized.size() > 1) {
-			logger.warn 'Found more than one ({}) uninitialized users for unique id {}',
-					uninitialized.size(), uniqueId
-		}
-		else if (uninitialized.size() == 1) {
-			existingUser = uninitialized[0]
-			foundUninitialized = true
-			logger.debug 'Found uninitialized user id:{} email:{}',
-					existingUser.id, existingUser.email
-		}
-		else {
-			existingUser = userService.findBy('uniqueId', uniqueId)
-			if (existingUser) {
-				logger.debug 'Auth0 Credentials existingUser uniqueId: {} username: {} email: {} id: {}',
-						uniqueId, existingUser.username, existingUser.email, existingUser.id
-			}
-		}
+            } else {
+                logger.error 'createCredentials() User is not set up in the database.'
+                // Create user record
+                if (auth0Config.registrationEnabled) {
+                    logger.debug 'createCredentials() registration is enabled, create an UNREGISTERED level user'
+                    credentials.username = UUID.randomUUID().toString()
+                    createUser credentials, userInfo.getString('user_id')
 
-		if (existingUser && !email) {
-			email = existingUser.email
-		}
+                } else {
+                    logger.debug 'createCredentials() registration is not enabled, do not do anything'
+                }
+            }
+        }
 
-		idToken = rebuildJwt(idToken, email)
-
-		Credentials credentials = new Credentials(
-				accessToken: accessToken,
-				connection: userInfo.getJSONArray('identities').getJSONObject(0).getString('connection'),
-				email: email,
-				idToken: idToken,
-				name: 'unregistered',
-				nickname: 'unregistered',
-				picture: '',
-				uniqueId: uniqueId)
-
-		if (existingUser) {
-			credentials.id = existingUser.id
-			credentials.level = customizationService.userLevel(existingUser)
-			credentials.username = existingUser.username
-			if (foundUninitialized) {
-				finishUninitializedUser existingUser, credentials, uniqueId
-			}
-		}
-		else {
-			if (auth0Config.registrationEnabled) {
-				credentials.username = UUID.randomUUID().toString()
-				createUser credentials, uniqueId
-				credentials.level = UserLevel.UNREGISTERED
-			}
-		}
-
+        logger.debug 'createCredentials() add `credentials` to the session CREDENTIALS_KEY attribute'
 		currentRequest().session.setAttribute CREDENTIALS_KEY, credentials
 
-		logger.debug 'Auth0 Credentials: {}', credentials
+		logger.debug 'createCredentials() return Auth0 Credentials: {}', credentials
 		credentials
-	}
-
-	private String determineUniqueId(JSONObject userInfo) {
-		String uniqueId = userInfo.getString('sub')
-		if (uniqueId.startsWith('github|') && (uniqueId - 'github|').isNumber()) {
-			'github|' + userInfo.getString('nickname')
-		}
-		else {
-			uniqueId
-		}
-	}
-
-	// primarily for ORCiD which returns the ORCiD in the 'email' claim
-	private String determineEmail(JSONObject userInfo) {
-		String email = userInfo.optString('email')
-		if (email && EmailValidator.instance.isValid(email)) {
-			email
-		}
 	}
 
 	private String rebuildJwt(String idToken, String email) {
@@ -303,8 +348,10 @@ class Auth0Service implements InitializingBean {
 
 	@Transactional
 	AuthUser createUser(Credentials credentials, String uniqueId) {
+        logger.debug 'createUser() starting'
+
 		AuthUser user = new AuthUser(
-				description: buildDescription(credentials.connection),
+				description: buildDescription(credentials.connection, credentials.picture),
 				email: credentials.email,
 				emailShow: true,
 				enabled: true,
@@ -319,18 +366,20 @@ class Auth0Service implements InitializingBean {
 
 		user.save()
 		if (user.hasErrors()) {
-			logger.error 'Could not create user {} because {}', credentials.username, utilService.errorStrings(user)
+			logger.error 'createUser() Could not create user {} because {}', credentials.username, utilService.errorStrings(user)
 		}
-		logger.info 'New user record has been created: {}', credentials.username
+		logger.info 'createUser() New user record has been created: {}', credentials.username
 		user
 	}
 
 	@Transactional
-	void finishUninitializedUser(AuthUser user, Credentials credentials, String uniqueId) {
-		user.description = buildDescription(credentials.connection)
+	void finishUninitializedUser(AuthUser user, Credentials credentials) {
+		user.description = buildDescription(credentials.connection, credentials.picture)
+        user.userRealName = credentials.name
 		user.enabled = true
-		user.uniqueId = uniqueId
+		user.uniqueId = credentials.uniqueId
 		user.save()
+
 		if (user.hasErrors()) {
 			logger.error 'Could not finish uninitialized user {} because {}', credentials.username, utilService.errorStrings(user)
 		}
@@ -340,13 +389,13 @@ class Auth0Service implements InitializingBean {
 		user
 	}
 
-	String buildDescription(String connection) {
+	String buildDescription(String connection, String picture) {
 		([about     : '',
 		  connection: connection,
 		  firstname : '',
 		  lastname  : '',
 		  phone     : '',
-		  picture   : ''] as JSON).toString()
+		  picture   : picture?:''] as JSON).toString()
 	}
 
 	/**
@@ -626,6 +675,7 @@ class Auth0Service implements InitializingBean {
 				((Auth0JWTToken) auth).jwtToken
 			}
 		}
+        null
 	}
 
 	@Transactional
@@ -722,16 +772,24 @@ class Auth0Service implements InitializingBean {
 	}
 
 	private void determineProviders() {
+        logger.debug 'determineProviders() starting'
 		String webtaskJs = webtaskJavaScript()
 		int start = webtaskJs.indexOf('var connections = [{') + 18
 		int end = webtaskJs.indexOf('}];\tvar lock =', start) + 1
+
 		Collection<String> webtaskNames = JSON.parse(webtaskJs[start..end]).collect { it['name'] } as Collection
+        logger.debug 'determineProviders() webtaskNames:{}', webtaskNames.toString()
 
 		for (ProviderInfo info in AUTH0_PROVIDERS) {
+            logger.debug 'determineProviders() provider {} / {} maybe?', info.displayName, info.webtaskName
 			if (info.webtaskName in webtaskNames) {
+                logger.debug 'determineProviders() selecting'
 				activeProviders << info
-			}
+			} else {
+                logger.warn 'determineProviders() skipping'
+            }
 		}
+        logger.debug 'determineProviders() finished'
 	}
 
 	void afterPropertiesSet() {
