@@ -3,6 +3,7 @@ package org.transmart.plugin.auth0
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
 import com.auth0.jwt.interfaces.DecodedJWT
+import com.jcraft.jsch.UserInfo
 import grails.compiler.GrailsCompileStatic
 import grails.converters.JSON
 import grails.gsp.PageRenderer
@@ -55,12 +56,6 @@ class Auth0Service implements InitializingBean {
 	private static final String CREDENTIALS_KEY = 'auth0Credentials'
 	private static final char DASH = '-'
 	private static final char X = 'X'
-    private String hql = '''
-				select u from AuthUser u
-                where u.passwd='auth0'
-                and lower(u.email)=:email
-                and lower(u.uniqueId)=lower(:uniqueId)
-				 '''
 
     private Algorithm algorithm
 	private String oauthTokenUrl
@@ -150,29 +145,78 @@ class Auth0Service implements InitializingBean {
      * should match every time the logs in again.
      * @param userInfo the full Auth0 profile for the user that was returned by the /userinfo endpoint
      */
-    AuthUser getExistingUser(JSONObject userInfo) {
-        logger.debug 'isExistingUser() starting'
+    @Transactional
+    AuthUser getUser(JSONObject userInfo) {
+        logger.debug 'getUser() starting, with userinfo {} ', userInfo
 
+		def auth0provider
+		auth0provider = userInfo.getJSONArray('identities').getJSONObject(0).getString('provider')
+		if (auth0provider == null || auth0provider.isEmpty()) {
+			throw new RuntimeException("Cannot get provider information. User cannot be authenticated.")
+		}
+        String lookupKey = ""
+        //ProviderInfo providerInfo = AUTH0_PROVIDERS.find { ProviderInfo pi -> user.uniqueId?.startsWith pi.subPrefix }
+		switch (auth0provider) {
+			case "ad":
+				// LDAP, use the nickname, which is the BCH user id
+                lookupKey = "ad|ldap-connector|"+userInfo.getString('nickname')
+				break
+			case "samlp":
+				// SAML, use the e-mail
+                lookupKey = "samlp|"+userInfo.getString('email')
+				break
+			case "google-oauth2":
+				// Google, use the e-mail
+                lookupKey = "google-oauth2|"+userInfo.getString('email')
+				break
+			case "github":
+				// Github, use the nickname (a.k.a username on GitHub)
+                lookupKey = "github|"+userInfo.getString('nickname')
+				break
+			case "oauth2":
+				// OAUTH2, most likely ORCiD, but use the full `sub` claim, regardless
+                lookupKey = "oauth2|"
+                String oauth2connectionName = userInfo.getJSONArray('identities').getJSONObject(0).getString('connection')
+                if (oauth2connectionName.equals("ORCiD")) {
+                    logger.debug 'getUser() connectionName:{}', oauth2connectionName
+                    lookupKey = userInfo.getString('sub')
+                } else {
+                    logger.error "getUser() Unknown Auth0 oauth2 connection {}.", oauth2connectionName
+                    throw new RuntimeException("Unknown Auth0 oauth2 connection");
+                }
+				break
+			default:
+				logger.error "getUser() Cannot handle Auth0 provider {}.", auth0provider
+				throw new RuntimeException("Cannot handle Auth0 provider")
+		}
         Map args = [:]
-        args.uniqueId = userInfo.getString('sub')
-        args.email = userInfo.getString('email').toLowerCase()
-        logger.debug 'isExistingUser() lookup by uniqId:{} and email:{}', args.uniqueId, args.email
+        // Use the `sub` claim by default
+        logger.debug 'getUser() lookupKey:{}', lookupKey
+        args.uniqueId = lookupKey
+        // args.email = userInfo.getString('email').toLowerCase()
+        logger.debug 'getUser() lookup by uniqId:{}', args.uniqueId
 
         // TODO: This should NOT be an SQL statement, maybe later we could convert this to a GORM query!?
-        logger.debug 'isExistingUser() SQL:{}', hql
-        List<AuthUser> uninitialized = AuthUser.executeQuery(hql, args)
-        if (uninitialized.size() > 1) {
-            logger.error 'isExistingUser() Found more than one ({}) users for uniqueId:{} and email:{} combo',
-                    uninitialized.size(), args.uniqueId, args.email
+		String hql = "select u from AuthUser u where u.passwd='auth0' and lower(u.uniqueId) LIKE lower(:uniqueId)||'%'"
+        logger.debug 'getUser() SQL: {}', hql
+        List<AuthUser> userRecords = AuthUser.executeQuery(hql, args)
+
+        if (userRecords.size() > 1) {
+            logger.error 'getUser() Found more than one ({}) users for uniqueId:{}',
+                    userRecords.size(), args.uniqueId
             return null
-        } else if (uninitialized.size() == 1) {
-            logger.debug 'isExistingUser() found one user record'
-            return uninitialized[0]
+        } else if (userRecords.size() == 1) {
+            logger.debug 'getUser() found one user record {}', userRecords[0]
+            // Update the database record with the validated and authenticated Auth0 `userInfo` details
+            updateUser userRecords[0], userInfo
+            logger.debug "getUser() User record is updated with validated info from `userInfo`"
+
+            logger.debug "getUser() returning full user record {}", userRecords[0]
+            return userRecords[0]
         } else {
-            logger.warn 'isExistingUser() did not find any user record'
+            logger.warn 'getUser() did not find any user record'
             return null
         }
-
         // Hopefully, if no user found or more than one user found, this will return NULL?!
     }
 
@@ -181,7 +225,7 @@ class Auth0Service implements InitializingBean {
      * initial user record creation by the admin, the uniqueId is either set to
      * CONNECTION|CONNECTION-ID (email, ORCiD or other known identifier) and name is 'unregistered'
      * @param userInfo the full Auth0 profile for the user that was returned by the /userinfo endpoint
-     */
+
     AuthUser getUninitedUser(JSONObject userInfo) {
         logger.debug 'getUninitedUser() starting'
 
@@ -210,6 +254,7 @@ class Auth0Service implements InitializingBean {
         }
         // Hopefully, if no user found or more than one user found, this will return NULL?!
     }
+     */
 
 	/**
 	 * Creates an initial Credentials instance and stores it in the HTTP session.
@@ -280,49 +325,50 @@ class Auth0Service implements InitializingBean {
                 nickname: 'unregistered',
                 picture: '',
                 uniqueId: 'UNKNOWN',
-                level: UserLevel.UNREGISTERED
+                level: UserLevel.UNREGISTERED,
+                tosVerified: false
         )
 
         // Check if the user has logged in before (have all matching information against the previously updated) or
         // this is a first-time login, in which case, we need to update the UNINITED user record with the actual
         // credentials, or simply someone who is not yet in the database, and therefore not pre-authorized to log-in.
-        AuthUser existingUser = getExistingUser(userInfo)
-        if (existingUser) {
-            logger.debug 'createCredentials() User already exists, and not a new user.'
+        logger.debug "createCredentials() lookup original by sub {}", userInfo.getString('sub')
+
+        AuthUser userRecord
+        List<AuthUser> users = AuthUser.findAll { uniqueId == userInfo.getString('sub') }
+        if (users.size() == 1) {
+            logger.debug "createCredentials() found existing record {}", users[0]
+            userRecord = users[0]
+        } else {
+            logger.debug "createCredentials() could not find existing record {} ", users
+            userRecord = getUser(userInfo)
+        }
+
+        if (userRecord) {
+            logger.debug 'createCredentials() Found a `userRecord` based on `userInfo`.'
             // Update the credentials from the user's existing record
-            credentials.id = existingUser.id
-            credentials.name = existingUser.userRealName
-            credentials.username = existingUser.username
-            credentials.email = existingUser.email
-            credentials.uniqueId = existingUser.uniqueId
-            credentials.idToken = rebuildJwt(idToken, existingUser.email)
-            credentials.level = customizationService.userLevel(existingUser)
+            credentials.email = userRecord.email
+            credentials.idToken = rebuildJwt(idToken, userRecord.email)
+            credentials.name = userRecord.userRealName
+            credentials.nickname = userInfo.optString('nickname')
+            credentials.picture = userInfo.optString('picture')
+            credentials.uniqueId = userRecord.uniqueId
+            credentials.level = customizationService.userLevel(userRecord)
+
+            // Additional information from the database
+            credentials.id = userRecord.id
+            credentials.username = userRecord.username
 
         } else {
-            existingUser = getUninitedUser(userInfo)
-            if (existingUser) {
-                logger.debug 'createCredentials() User exists, but uninitialized!'
-                credentials.id = existingUser.id
-                credentials.username = userInfo.getString('user_id')
-                credentials.idToken = rebuildJwt(idToken, existingUser.email)
-                credentials.picture = userInfo.optString('picture')
-                credentials.name = userInfo.optString('name')
-                credentials.nickname = userInfo.optString('nickname')
-                credentials.uniqueId = userInfo.optString('user_id')
-                credentials.level = customizationService.userLevel(existingUser)
-                finishUninitializedUser existingUser, credentials
-
+            logger.error 'createCredentials() User is not set up in the database.'
+            // Create user record
+            if (auth0Config.registrationEnabled) {
+                logger.debug 'createCredentials() registration is enabled, create an UNREGISTERED level user'
+                credentials.username = UUID.randomUUID().toString()
+                credentials.email = userInfo.getString('email')
+                createUser credentials, userInfo.getString('user_id')
             } else {
-                logger.error 'createCredentials() User is not set up in the database.'
-                // Create user record
-                if (auth0Config.registrationEnabled) {
-                    logger.debug 'createCredentials() registration is enabled, create an UNREGISTERED level user'
-                    credentials.username = UUID.randomUUID().toString()
-                    createUser credentials, userInfo.getString('user_id')
-
-                } else {
-                    logger.debug 'createCredentials() registration is not enabled, do not do anything'
-                }
+                logger.debug 'createCredentials() registration is not enabled, do not do anything'
             }
         }
 
@@ -369,23 +415,6 @@ class Auth0Service implements InitializingBean {
 			logger.error 'createUser() Could not create user {} because {}', credentials.username, utilService.errorStrings(user)
 		}
 		logger.info 'createUser() New user record has been created: {}', credentials.username
-		user
-	}
-
-	@Transactional
-	void finishUninitializedUser(AuthUser user, Credentials credentials) {
-		user.description = buildDescription(credentials.connection, credentials.picture)
-        user.userRealName = credentials.name
-		user.enabled = true
-		user.uniqueId = credentials.uniqueId
-		user.save()
-
-		if (user.hasErrors()) {
-			logger.error 'Could not finish uninitialized user {} because {}', credentials.username, utilService.errorStrings(user)
-		}
-		else {
-			logger.info 'finishUninitializedUser() updated uninitialized user {}', credentials.username
-		}
 		user
 	}
 
@@ -791,6 +820,18 @@ class Auth0Service implements InitializingBean {
 		}
         logger.debug 'determineProviders() finished'
 	}
+
+    private boolean updateUser(AuthUser userRecord, JSONObject userInfo) {
+        logger.debug 'updateUser() starting'
+
+        userRecord.description = buildDescription(userInfo.getJSONArray('identities').getJSONObject(0).getString('connection'), userInfo.optString('picture'))
+        userRecord.userRealName = userInfo.optString('name');
+        userRecord.name = userInfo.optString('name');
+        userRecord.email = userInfo.getString('email');
+        userRecord.uniqueId = userInfo.getString('sub');
+        logger.debug 'updateUser() new details {}', userRecord
+        return userRecord.save()
+    }
 
 	void afterPropertiesSet() {
 		if (!auth0Config) { // not injected if active=false
