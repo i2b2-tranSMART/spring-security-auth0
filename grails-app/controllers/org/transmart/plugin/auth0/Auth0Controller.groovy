@@ -53,6 +53,8 @@ class Auth0Controller implements InitializingBean {
 	@Autowired private UserService userService
 
 	def auth() {
+		logger.debug "auth() starting"
+
 		boolean forcedFormLogin = request.queryString
 		if (customizationConfig.guestAutoLogin && !forcedFormLogin) {
 			logger.info 'Automatic login with userid {}', customizationConfig.guestUserName
@@ -71,6 +73,7 @@ class Auth0Controller implements InitializingBean {
 			}
 		}
 
+		logger.debug "auth() no `autologin` detected, proceeding with normat authentication check"
 		if (securityService.loggedIn()) {
 			logger.debug 'User id:{} email:{} already authenticated in auth()',
 					securityService.currentUserId(), securityService.principal().email
@@ -83,6 +86,7 @@ class Auth0Controller implements InitializingBean {
 	}
 
 	def passwordLogin() {
+		logger.debug 'passwordLogin() starting'
 		if (auth0AdminExists()) {
 			logger.warn 'Unexpected password login attempt, not allowed when there is at least one Auth0 user with admin rights'
 			render status: 404
@@ -132,6 +136,7 @@ class Auth0Controller implements InitializingBean {
 	}
 
 	def callback(String code) {
+		logger.debug 'callback() starting'
 		redirect auth0Service.callback(code)
 	}
 
@@ -206,10 +211,13 @@ class Auth0Controller implements InitializingBean {
 	}
 
 	def notyet() {
+        logger.debug 'notyet() starting'
 		authService.logout()
+        logger.debug 'notyet() logged out'
 	}
 
 	def registration() {
+        logger.debug 'registration() starting'
 		Credentials credentials = auth0Service.credentials()
 		if (!credentials) {
 			session.error_message = 'Could not find credentials for registration.' // TODO flash
@@ -218,25 +226,23 @@ class Auth0Controller implements InitializingBean {
 		}
 
 		Map userInfo = userService.currentUserInfo(credentials.username)
-
-		logger.info 'Registration starting for {}', credentials.username
+		logger.info 'registration() for {}', credentials.username
 
 		// After saving the credentials, logout from the session
 		if (userInfo.level < UserLevel.ONE && userInfo.firstname) {
-			logger.info 'User has already registered as {} {}', userInfo.firstname, userInfo.lastname
-
+			logger.info 'registration() User has already registered as {} {}', userInfo.firstname, userInfo.lastname
 			authService.logout()
-
-			logger.info 'User is now logged out, and redirect to NOTYET page.'
+			logger.info 'registration() User is now logged out, and redirect to NOTYET page.'
 			redirect action: 'notyet'
 			return
 		}
 
 		if (!customizationConfig.userSignupEnabled) {
+            logger.debug 'registration() userSignup is disabled, so we have to reject the request and redirect to `notauthorized` action'
 			redirect action: 'notauthorized'
 			return
 		}
-
+        logger.debug 'registration() return to `registration` view/page'
 		[user: userInfo]
 	}
 
@@ -282,7 +288,7 @@ class Auth0Controller implements InitializingBean {
 
 	def adminUserShow(AuthUser authUser) {
 		if (!authUser) {
-			flash.message = "AuthUser not found with id $params.id"
+			flash.message = "AuthUser not found with id:"+params.id
 			redirect action: 'adminUserList'
 			return
 		}
@@ -320,31 +326,37 @@ class Auth0Controller implements InitializingBean {
 	}
 
 	private saveOrUpdate(AuthUser authUser) {
+        logger.debug 'saveOrUpdate() starting'
 
 		boolean create = params.id == null
 		if (create) {
+            logger.debug 'saveOrUpdate() create AuthUser object'
 			authUser = new AuthUser(enabled: false, passwd: 'auth0',
 					username: UUID.randomUUID().toString())
 		}
 
+        logger.debug 'saveOrUpdate() configure new user:{}', params
 		authUser.userRealName = (params.userRealName ?: '').trim()
 		authUser.name = authUser.userRealName
-
 		authUser.email = (params.email ?: '').trim()
-
+        logger.debug 'saveOrUpdate() validating `authUser` object.'
 		authUser.validate()
 
 		if (authUser.email) {
 			if (!validateEmail(authUser.email)) {
+                logger.debug 'saveOrUpdate() could not validate email value:{}', authUser.email
 				authUser.errors.rejectValue 'email', 'valid', null,
 						'Please enter a valid email address'
-			}
+			} else {
+                logger.debug 'saveOrUpdate() valid email value:{}', authUser.email
+            }
 		}
 		else {
+            logger.debug 'saveOrUpdate() no `email` field for `authUser` object'
 			authUser.errors.rejectValue 'email', 'blank', null,
 					'Email address is required'
 		}
-
+        logger.debug 'saveOrUpdate() calling determineUniqueId()'
 		determineUniqueId authUser, create
 
 		String message
@@ -379,6 +391,8 @@ class Auth0Controller implements InitializingBean {
 	}
 
 	private void determineUniqueId(AuthUser authUser, boolean create) {
+        logger.info "determineUniqueId() starting {}", authUser.toString()
+
 		ProviderInfo providerInfo = auth0Service.auth0Providers.find { ProviderInfo pi -> pi.displayName == params.auth0Provider }
 		String providerId
 		if (providerInfo) {
@@ -397,6 +411,7 @@ class Auth0Controller implements InitializingBean {
 			return
 		}
 
+        logger.info "determineUniqueId() ProviderInfo:{}", providerInfo.toString()
 		switch (providerInfo.webtaskName) {
 			case 'google-oauth2':
 				if (!(providerId ==~ /\d{21}/ || validateEmail(providerId))) {
@@ -446,6 +461,8 @@ class Auth0Controller implements InitializingBean {
 	protected Map buildAuthModel() {
 		String webtaskCSS = auth0Config.webtaskBaseUrl ? auth0Service.webtaskCSS() : ''
 		String webtaskJavaScript = auth0Config.webtaskBaseUrl ? auth0Service.webtaskJavaScript() : ''
+		logger.info "WebTaskJavaScript:"+webtaskJavaScript
+
 		[auth0ConnectionCss: webtaskCSS,
 		 auth0ConnectionJs : webtaskJavaScript,
 		 auth0AdminExists: auth0AdminExists()] + authModel
