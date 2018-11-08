@@ -2,6 +2,8 @@ package org.transmart.plugin.auth0
 
 import grails.converters.JSON
 import grails.plugin.springsecurity.SpringSecurityUtils
+import grails.plugins.rest.client.RestBuilder
+import grails.plugins.rest.client.RestResponse
 import groovy.util.logging.Slf4j
 import org.apache.commons.validator.routines.EmailValidator
 import org.springframework.beans.factory.InitializingBean
@@ -136,7 +138,6 @@ class Auth0Controller implements InitializingBean {
 	}
 
 	def callback(String code) {
-		logger.debug 'callback() starting'
 		redirect auth0Service.callback(code)
 	}
 
@@ -386,6 +387,35 @@ class Auth0Controller implements InitializingBean {
 		}
 	}
 
+    /*
+        To validate a GitHub username, given by the admin the the `Provider ID` field on the `Create User` page,
+        we call out to GitHub, and get the publicly available user profile, based on the data provided.
+    */
+    private boolean isValidGitHubId(String nickname) {
+        logger.debug 'isValidGitHubId() starting'
+        boolean username_valid = false
+
+        RestBuilder rest = new RestBuilder()
+        RestResponse githubResponse = rest.get("https://api.github.com/users/"+nickname)
+		logger.debug 'isValidGitHubId() status: {}', githubResponse.status
+		logger.debug 'isValidGitHubId() response:{}', githubResponse.text
+        switch (githubResponse.status) {
+            case 200:
+                // Username is found, and a valid profile has been returned
+                username_valid = true;
+                break;
+            case 404:
+                // GitHub could not find the named user
+                username_valid = false;
+                break;
+            default:
+                // Something else went wrong with looking up the user on GitHub
+                username_valid = false;
+        }
+		logger.debug 'isValidGitHubId() returning {}', username_valid
+        return username_valid
+	}
+
 	private boolean validateEmail(String email) {
 		EmailValidator.instance.isValid email
 	}
@@ -420,9 +450,9 @@ class Auth0Controller implements InitializingBean {
 				}
 				break
 			case 'github':
-				if (!(providerId ==~ /\d+/ || validateEmail(providerId))) {
+				if (!isValidGitHubId(providerId)) {
 					authUser.errors.rejectValue 'uniqueId', 'invalidGithub', null,
-							'GitHub provider ID must be an email or a number'
+							'Could not validate GitHub username.'
 				}
 				break
 			case 'ORCiD':

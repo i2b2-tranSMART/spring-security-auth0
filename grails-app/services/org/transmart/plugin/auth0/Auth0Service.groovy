@@ -33,8 +33,12 @@ import org.transmart.plugin.shared.security.Roles
 import org.transmart.searchapp.AuthUser
 import org.transmart.searchapp.Role
 import org.transmartproject.db.log.AccessLogService
+import us.monoid.json.JSONArray
 import us.monoid.json.JSONObject
 import us.monoid.web.Resty
+
+import grails.plugins.rest.client.RestBuilder
+import grails.plugins.rest.client.RestResponse
 
 import javax.servlet.http.HttpServletRequest
 
@@ -87,7 +91,7 @@ class Auth0Service implements InitializingBean {
 	 *         or a redirect action under the 'action' key
 	 */
 	Map<String, String> callback(String code) {
-		logger.debug "callback() service starting"
+		logger.debug "callback() starting"
 
 		HttpServletRequest request = currentRequest()
 		String port
@@ -100,32 +104,30 @@ class Auth0Service implements InitializingBean {
 		}
 		String redirectUri = request.scheme + '://' + request.serverName + port + request.contextPath
 
-        logger.debug '/callback calling createCredentials()'
+        logger.debug 'callback() calling createCredentials() with redirectUri {}', redirectUri
 		Credentials credentials = createCredentials(code, redirectUri)
-        logger.debug '/callback credentials:', credentials
+        logger.debug 'callback() credentials:', credentials
 
 		if (credentials.username && credentials.level > UserLevel.ZERO) {
 			credentials.tosVerified = verifyTOSAccepted(credentials.id)
 			if (credentials.tosVerified) {
 				authenticateAs credentials
-				logger.info '/callback User id:{} email:{} successfully authenticated',
-						credentials.id, credentials.email
-                logger.debug '/callback redirecting to ',auth0Config.redirectOnSuccess
+				logger.info 'callback() Successfully authenticated'
+                logger.debug 'callback() redirecting to ',auth0Config.redirectOnSuccess
 				[uri: auth0Config.redirectOnSuccess]
 			}
 			else {
-				logger.info '/callback User id:{} email:{} authenticated but needs TOS, redirecting',
-						credentials.id, credentials.email
+				logger.info 'callback() authenticated but needs TOS, redirecting to `tos`'
 				[action: 'tos']
 			}
 		}
 		else {
 			if (auth0Config.registrationEnabled) {
-				logger.info '/callback Redirecting to registration: {}', credentials
+				logger.info 'callback() Redirecting to `registration`'
 				[action: 'registration']
 			}
 			else {
-				logger.info '/callback Registration not enabled, redirecting to notauthorized: {}', credentials
+				logger.info 'callback() Registration not enabled, redirecting to `notauthorized`'
 				[action: 'notauthorized']
 			}
 		}
@@ -221,99 +223,97 @@ class Auth0Service implements InitializingBean {
     }
 
     /**
-     * Determine if the user is logging in for the first time, or not. Based on the
-     * initial user record creation by the admin, the uniqueId is either set to
-     * CONNECTION|CONNECTION-ID (email, ORCiD or other known identifier) and name is 'unregistered'
-     * @param userInfo the full Auth0 profile for the user that was returned by the /userinfo endpoint
-
-    AuthUser getUninitedUser(JSONObject userInfo) {
-        logger.debug 'getUninitedUser() starting'
-
-        Map args = [:]
-        List<String> components = Arrays.asList(
-                userInfo.getJSONArray('identities').getJSONObject(0).getString('provider'),
-                String.join("_", Arrays.asList(userInfo.getString('email'),"UNINITIALIZED"))
-        )
-        args.uniqueId = String.join("|", components)
-        args.email = userInfo.getString('email').toLowerCase()
-        logger.debug 'getUninitedUser() lookup by uniqId:{} and email:{}', args.uniqueId, args.email
-
-        // TODO: This should NOT be an SQL statement, maybe later we could convert this to a GORM query!?
-        logger.debug 'getUninitedUser() SQL:{}', hql
-        List<AuthUser> uninitialized = AuthUser.executeQuery(hql, args)
-        if (uninitialized.size() > 1) {
-            logger.error 'getUninitedUser() Found more than one ({}) users for uniqueId:{} and email:{} combo',
-                    uninitialized.size(), args.uniqueId, args.email
-            return null
-        } else if (uninitialized.size() == 1) {
-            logger.debug 'getUninitedUser() found one user record'
-            return uninitialized[0]
-        } else {
-            logger.warn 'getUninitedUser() did not find any user record'
-            return null
-        }
-        // Hopefully, if no user found or more than one user found, this will return NULL?!
-    }
+     * Retrieve a previously created user authentication record. If there are any
+     * @param code the `code` querystring parameter from the Auth0 callback
      */
+    void getUserInfo(String idToken) {
+        logger.debug 'getUserInfo() starting, with idToken:{}', idToken
 
-	/**
-	 * Creates an initial Credentials instance and stores it in the HTTP session.
-	 * @param code the 'code' querystring parameter from the Auth0 callback
-	 * @param redirectUri base of the callback url, e.g. https://server/contextPath
-	 */
-	Credentials createCredentials(String code, String redirectUri) {
+				// Using a service (based on the configured URL) for token introspection
+        String userinfoURL = customizationConfig.oauth_server_url
+				logger.debug 'getUserInfo() token introspection url: {}', userinfoURL
+        String adminToken = customizationConfig.oauth_admin_token
+
+        RestBuilder rest = new RestBuilder()
+        RestResponse rsp = rest.post(userinfoURL) {
+            auth("Bearer $adminToken")
+            contentType("application/x-www-form-urlencoded")
+            body("token="+idToken)
+        }
+
+        if (rsp.status != 200) {
+        	logger.error 'getUserInfo() `userInfo` could not be obtained. status:{} message:{}', rsp.status, rsp.text
+					
+        } else {
+					logger.debug 'getUserInfo() finished, would return {}', rsp.text
+					
+				}
+    }
+
+    /**
+		 * Creates an initial Credentials instance and stores it in the HTTP session.
+		 * @param code the 'code' querystring parameter from the Auth0 callback
+		 * @param redirectUri base of the callback url, e.g. https://server/contextPath
+		 */
+		Credentials createCredentials(String code, String redirectUri) {
         logger.debug 'createCredentials() starting'
-		JSONObject json = new JSONObject(
-				client_id: auth0Config.auth0ClientId,
-				client_secret: auth0Config.auth0ClientSecret,
-				code: code,
-				grant_type: 'authorization_code',
-				redirect_uri: redirectUri)
 
-		Resty resty = new Resty()
-		JSONObject tokenInfo = resty.json(oauthTokenUrl, Resty.content(json)).toObject()
-		// {
-		//   "access_token":"...",
-		//   "expires_in":86400,
-		//   "id_token":"...",
-		//   "token_type":"Bearer"
-		// }
+				JSONObject json = new JSONObject(
+						client_id: auth0Config.auth0ClientId,
+						client_secret: auth0Config.auth0ClientSecret,
+						code: code,
+						grant_type: 'authorization_code',
+						redirect_uri: redirectUri)
 
-		String accessToken = tokenInfo.getString('access_token')
-		String idToken = tokenInfo.getString('id_token')
+				Resty resty = new Resty()
+				logger.debug 'createCredentials() oauthTokenUrl is {}', oauthTokenUrl
+				JSONObject tokenInfo = resty.json(oauthTokenUrl, Resty.content(json)).toObject()
+				// {
+				//   "access_token":"...",
+				//   "expires_in":86400,
+				//   "id_token":"...",
+				//   "token_type":"Bearer"
+				// }
 
-		JSONObject userInfo = resty.json(userInfoUrl + accessToken).toObject()
-		// {
-		// 	"app_metadata":
-		// 		{
-		// 			"roles":["ROLE_CITI_USER"]
-		// 		},
-		// 		"clientID":"...",
-		// 		"created_at":"2017-11-21T15:19:50.683Z",
-		// 		"email":"burtbeckwith@gmail.com",
-		// 		"email_verified":true,
-		// 		"family_name":"Beckwith",
-		// 		"gender":"male",
-		// 		"given_name":"Burt",
-		// 		"identities":[
-		// 			{
-		// 				"connection":"google-oauth2",
-		// 				"isSocial":true,
-		// 				"provider":"google-oauth2",
-		// 				"user_id":"..."
-		// 			}
-		// 		],
-		// 		"locale":"en",
-		// 		"name":"Burt Beckwith",
-		// 		"nickname":"burtbeckwith",
-		// 		"picture":"https://lh3.googleusercontent.com/-rG-S66wU1LI/AAAAAAAAAAI/AAAAAAAAAfE/ijUU6rz8j3I/photo.jpg",
-		// 		"roles":["ROLE_CITI_USER"],
-		// 		"sub":"google-oauth2|...",
-		// 		"updated_at":"2018-02-20T13:25:20.721Z",
-		// 		"user_id":"google-oauth2|..."
-		// }
+				String accessToken = tokenInfo.getString('access_token')
+				String idToken = tokenInfo.getString('id_token')
+				logger.debug 'createCredentials() getting userinfo with accessToken {}', accessToken
+				logger.debug 'createCredentials() getting userinfo with idToken {}', idToken
+		        getUserInfo(idToken)
 
-		logger.info 'createCredentials() Auth0 userinfo: {}', userInfo
+				logger.debug 'createCredentials() using userInfoUrl {} with access token', userInfoUrl
+				JSONObject userInfo = resty.json(userInfoUrl + accessToken).toObject()
+				// {
+				// 	"app_metadata":
+				// 		{
+				// 			"roles":["ROLE_CITI_USER"]
+				// 		},
+				// 		"clientID":"...",
+				// 		"created_at":"2017-11-21T15:19:50.683Z",
+				// 		"email":"burtbeckwith@gmail.com",
+				// 		"email_verified":true,
+				// 		"family_name":"Beckwith",
+				// 		"gender":"male",
+				// 		"given_name":"Burt",
+				// 		"identities":[
+				// 			{
+				// 				"connection":"google-oauth2",
+				// 				"isSocial":true,
+				// 				"provider":"google-oauth2",
+				// 				"user_id":"..."
+				// 			}
+				// 		],
+				// 		"locale":"en",
+				// 		"name":"Burt Beckwith",
+				// 		"nickname":"burtbeckwith",
+				// 		"picture":"https://lh3.googleusercontent.com/-rG-S66wU1LI/AAAAAAAAAAI/AAAAAAAAAfE/ijUU6rz8j3I/photo.jpg",
+				// 		"roles":["ROLE_CITI_USER"],
+				// 		"sub":"google-oauth2|...",
+				// 		"updated_at":"2018-02-20T13:25:20.721Z",
+				// 		"user_id":"google-oauth2|..."
+				// }
+
+				logger.info 'createCredentials() Auth0 userinfo: {}', userInfo
 
         // Create a base `Credentials` object, with reasonable defaults.
         Credentials credentials = new Credentials(
@@ -598,7 +598,13 @@ class Auth0Service implements InitializingBean {
 				supportEmail      : customizationConfig.supportEmail,
 				user              : user,
 				userGuideUrl      : customizationConfig.userGuideUrl])
-		sendEmail user.email, 'Access Granted', body
+		
+		try {
+			sendEmail user.email, 'Access Granted', body
+		} catch (Exception e) {
+			logger.error 'changeUserLevel() Could not send the e-mail about granting access. {}', e.getMessage()
+		}
+
 	}
 
 	private void updateRoles(UserLevel level, AuthUser user) {
