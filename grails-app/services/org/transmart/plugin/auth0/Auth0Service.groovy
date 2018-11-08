@@ -225,7 +225,7 @@ class Auth0Service implements InitializingBean {
     /**
      * Retrieve a previously created user authentication record. If there are any
      * @param code the `code` querystring parameter from the Auth0 callback
-     */
+
     void getUserInfo(String idToken) {
         logger.debug 'getUserInfo() starting, with idToken:{}', idToken
 
@@ -243,12 +243,12 @@ class Auth0Service implements InitializingBean {
 
         if (rsp.status != 200) {
         	logger.error 'getUserInfo() `userInfo` could not be obtained. status:{} message:{}', rsp.status, rsp.text
-					
+
         } else {
 					logger.debug 'getUserInfo() finished, would return {}', rsp.text
-					
+
 				}
-    }
+    }*/
 
     /**
 		 * Creates an initial Credentials instance and stores it in the HTTP session.
@@ -277,9 +277,9 @@ class Auth0Service implements InitializingBean {
 
 				String accessToken = tokenInfo.getString('access_token')
 				String idToken = tokenInfo.getString('id_token')
-				logger.debug 'createCredentials() getting userinfo with accessToken {}', accessToken
-				logger.debug 'createCredentials() getting userinfo with idToken {}', idToken
-		        getUserInfo(idToken)
+
+        // TODO: Add oauth server query, based on RFC 7662
+        // getUserInfo(idToken)
 
 				logger.debug 'createCredentials() using userInfoUrl {} with access token', userInfoUrl
 				JSONObject userInfo = resty.json(userInfoUrl + accessToken).toObject()
@@ -598,7 +598,7 @@ class Auth0Service implements InitializingBean {
 				supportEmail      : customizationConfig.supportEmail,
 				user              : user,
 				userGuideUrl      : customizationConfig.userGuideUrl])
-		
+
 		try {
 			sendEmail user.email, 'Access Granted', body
 		} catch (Exception e) {
